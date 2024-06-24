@@ -120,7 +120,6 @@ class RetrieverTrainingArguments(TrainingArguments):
     warmup_ratio: float = field(default=0.0)
     logging_steps: int = field(default=10)
     eval_steps: int = field(default=50)
-    save_steps: int = field(default=50)
     max_grad_norm: float = field(default=1.0)
     dataloader_drop_last: bool = field(default=True)
     gradient_checkpointing: bool = field(default=False)
