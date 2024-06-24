@@ -135,7 +135,6 @@ class TrainDatasetForReranker(Dataset):
 
         return passages_inputs
 
-
 import re
 import sys
 from typing import List
@@ -197,7 +196,10 @@ class EvalDatasetForReranker(Dataset):
 
     def __getitem__(self, item) -> List[BatchEncoding]:
         query = self.dataset[item]['query']
-        passages = self.dataset[item]['passages']  # Assuming 'passages' contains all passages for evaluation
+
+        passages = []
+        pos = self.dataset[item]['pos']  # Directly use the positive passage without sampling
+        passages.append(pos)
 
         prompt = self.dataset[item]['prompt']
 
