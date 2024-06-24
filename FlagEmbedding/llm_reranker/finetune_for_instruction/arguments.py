@@ -2,11 +2,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional, List
 
-import torch
-from transformers import Trainer, TrainingArguments
-from transformers.trainer import *
-from transformers.deepspeed import is_deepspeed_zero3_enabled
-from peft import get_peft_model_state_dict
+from transformers import TrainingArguments
 
 def default_list() -> List[str]:
     return ["q_proj", "v_proj", "o_proj", "down_proj", "up_proj", "gate_proj"]
@@ -112,83 +108,4 @@ class RetrieverTrainingArguments(TrainingArguments):
     do_eval: bool = field(default=False, metadata={"help": "Whether to run eval on the dev set."})
     eval_steps: int = field(default=None, metadata={"help": "Run an evaluation every X steps."})
     evaluate_during_training: bool = field(default=False, metadata={"help": "Run evaluation during training at each logging step."})
-
-class BiTrainer(Trainer):
-    use_lora: bool
-
-    def _save(self, output_dir: Optional[str] = None, state_dict=None):
-        if not self.use_lora:
-            super()._save(output_dir, state_dict)
-            return
-        output_dir = output_dir if output_dir is not None else self.args.output_dir
-        os.makedirs(output_dir, exist_ok=True)
-        logger.info("Saving model checkpoint to %s", output_dir)
-        if not hasattr(self.model, 'save'):
-            raise NotImplementedError(
-                f'MODEL {self.model.__class__.__name__} '
-                f'does not support save interface')
-        else:
-            self.model.save(output_dir)
-        torch.save(self.args, os.path.join(output_dir, "training_args.bin"))
-        if is_deepspeed_zero3_enabled():
-            if state_dict is None:
-                state_dict = self.model.state_dict()
-            prefix = 'model.'
-            assert all(k.startswith(prefix) for k in state_dict.keys()), list(state_dict.keys())
-            state_dict = {k[len(prefix):]: v for k, v in state_dict.items()}
-            lora_state_dict = get_peft_model_state_dict(self.model.model, state_dict)
-            if self.args.process_index <= 0:
-                torch.save(lora_state_dict, os.path.join(output_dir, "adapter_model.bin"))
-                print(f"Save adapter model at {output_dir}")
-
-    def compute_loss(self, model, inputs, return_outputs=False):
-        outputs = model(**inputs)
-        loss = outputs.loss
-        return (loss, outputs) if return_outputs else loss
-
-    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
-        eval_dataloader = self.get_eval_dataloader(eval_dataset)
-        
-        # Initialize containers for evaluation results
-        all_losses = []
-        all_preds = []
-        all_labels = []
-        
-        # Set model to evaluation mode
-        self.model.eval()
-        
-        for batch in eval_dataloader:
-            with torch.no_grad():
-                # Move batch to device
-                batch = {k: v.to(self.args.device) for k, v in batch.items()}
-                
-                # Forward pass
-                outputs = self.model(**batch)
-                
-                # Compute loss
-                loss = outputs.loss
-                all_losses.append(loss.item())
-                
-                # Get predictions and labels
-                preds = outputs.logits.argmax(dim=-1)
-                labels = batch["labels"]
-                
-                all_preds.extend(preds.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
-        
-        # Compute average loss
-        avg_loss = sum(all_losses) / len(all_losses)
-        
-        # Compute accuracy
-        accuracy = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_preds)
-        
-        # Create metrics dict
-        metrics = {
-            f"{metric_key_prefix}_loss": avg_loss,
-            f"{metric_key_prefix}_accuracy": accuracy,
-        }
-        
-        # Log results
-        self.log(metrics)
-        
-        return metrics
+    per_device_eval_batch_size: int = field(default=8, metadata={"help": "Batch size per GPU/TPU core/CPU for evaluation."})
