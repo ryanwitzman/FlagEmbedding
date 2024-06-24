@@ -34,10 +34,11 @@ class ModelArguments:
                           "then only materialize its parameters when the pretrained weights are loaded."}
     )
     cache_dir: str = field(
-        default="tmp", metadata={"help": "the     )
+        default="tmp",
     token: Optional[str] = field(
         default=None, metadata={"help": "The token to access the Hugging Face model hub"}
     )
+
 
 
 @dataclass
