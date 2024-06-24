@@ -296,16 +296,3 @@ class RerankCollator(DataCollatorForSeq2Seq):
         )
 
         return {"pair": collated}
-
-# Example usage
-# Assuming you have a tokenizer and DataArguments instance
-# tokenizer = PreTrainedTokenizer()
-# data_args = DataArguments()
-
-# train_dataset = TrainDatasetForReranker(data_args, tokenizer)
-# eval_dataset = EvalDatasetForReranker(data_args, tokenizer)
-
-# collator = RerankCollator(tokenizer)
-
-# train_dataloader = DataLoader(train_dataset, batch_size=8, collate_fn=collator)
-# eval_dataloader = DataLoader(eval_dataset, batch_size=8, collate_fn=collator)
