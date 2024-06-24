@@ -102,6 +102,9 @@ def main():
             padding=True
         ),
         tokenizer=tokenizer,
+        eval_steps=50,
+        evaluation_strategy="steps",
+        per_device_eval_batch_size=1,
     )
     trainer.use_lora = model_args.use_lora
 
@@ -110,9 +113,6 @@ def main():
     # Training with evaluation every 50 steps
     trainer.train(
         resume_from_checkpoint=training_args.resume_from_checkpoint,
-        eval_steps=50,
-        evaluation_strategy="steps",
-        per_device_eval_batch_size=1,
     )
 
     trainer.save_model()
