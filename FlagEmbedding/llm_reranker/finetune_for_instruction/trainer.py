@@ -17,57 +17,44 @@ class BiTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
     
     def evaluation_loop(
-    self,
-    dataloader: DataLoader,
-    description: str,
-    prediction_loss_only: Optional[bool] = None,
-    ignore_keys: Optional[List[str]] = None,
-    metric_key_prefix: str = "eval",
-) -> EvalLoopOutput:
+        self,
+        dataloader: DataLoader,
+        description: str,
+        prediction_loss_only: Optional[bool] = None,
+        ignore_keys: Optional[List[str]] = None,
+        metric_key_prefix: str = "eval",
+    ) -> EvalLoopOutput:
         model = self._wrap_model(self.model, training=False, dataloader=dataloader)
         batch_size = dataloader.batch_size
         num_examples = self.num_examples(dataloader)
-        logger.info(f"***** Running evaluation *****")
+        logger.info(f"***** Running {description} *****")
         logger.info(f"  Num examples = {num_examples}")
         logger.info(f"  Batch size = {batch_size}")
         
         model.eval()
         self.callback_handler.eval_dataloader = dataloader
         
-        total_loss = 0.0
-        all_preds = []
+        all_scores = []
         all_labels = []
         
         for step, inputs in enumerate(dataloader):
             with torch.no_grad():
                 outputs = model(**inputs)
-                # Ensure that the loss is extracted correctly
-                if isinstance(outputs, dict):
-                    loss = outputs.get("loss", None)
-                    scores = outputs.get("scores", None)
-                else:
-                    loss = outputs.loss
-                    scores = outputs.scores
-                if loss is not None:
-                    total_loss += loss.item()
-                
-                if not prediction_loss_only and scores is not None:
-                    all_preds.append(scores.cpu().numpy())
+                scores = outputs.get("scores", None)
+                if scores is not None:
+                    all_scores.append(scores.cpu().numpy())
                     if 'labels' in inputs:
                         all_labels.append(inputs['labels'].cpu().numpy())
         
-        avg_loss = total_loss / len(dataloader)
-        metrics = {}
-        metrics[f"{metric_key_prefix}_loss"] = avg_loss
+        all_scores = np.concatenate(all_scores, axis=0)
+        all_labels = np.concatenate(all_labels, axis=0)
         
-        if not prediction_loss_only:
-            all_preds = np.concatenate(all_preds, axis=0)
-            all_labels = np.concatenate(all_labels, axis=0)
-            if self.compute_metrics is not None:
-                metrics.update(self.compute_metrics(EvalPrediction(predictions=all_preds, label_ids=all_labels)))
+        metrics = {}
+        if self.compute_metrics is not None:
+            metrics.update(self.compute_metrics(EvalPrediction(predictions=all_scores, label_ids=all_labels)))
         
         self.log(metrics)
-        return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_examples)
+        return EvalLoopOutput(predictions=all_scores, label_ids=all_labels, metrics=metrics, num_samples=num_examples)
         
     def evaluate(
         self,
@@ -83,8 +70,3 @@ class BiTrainer(Trainer):
             ignore_keys=ignore_keys,
             metric_key_prefix=metric_key_prefix,
         ).metrics
-def find_batch_size(inputs):
-    for v in inputs.values():
-        if isinstance(v, torch.Tensor):
-            return v.shape[0]
-    return None
