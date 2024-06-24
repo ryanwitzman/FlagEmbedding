@@ -1,109 +1,129 @@
-from transformers.trainer import *
-from transformers.deepspeed import is_deepspeed_zero3_enabled
-from peft import get_peft_model_state_dict
-import torch
-from torch.utils.data import DataLoader
-from typing import Dict, List, Optional, Union
+import logging
+import os
+from pathlib import Path
 
-class BiTrainer(Trainer):
-    use_lora: bool
-    def compute_loss(self, model, inputs, return_outputs=False):
-        outputs = model(**inputs)
-        loss = outputs.loss
-        return (loss, outputs) if return_outputs else loss
+from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, set_seed
+from .arguments import ModelArguments, DataArguments, RetrieverTrainingArguments as TrainingArguments
+from .data import TrainDatasetForReranker, EvalDatasetForReranker, RerankCollator
+from .modeling import BiEncoderModel
+from .trainer import BiTrainer
+from .load_model import get_model
 
-    def evaluation_loop(
-        self,
-        dataloader: DataLoader,
-        description: str,
-        prediction_loss_only: Optional[bool] = None,
-        ignore_keys: Optional[List[str]] = None,
-        metric_key_prefix: str = "eval",
-    ) -> EvalLoopOutput:
-        
-        model = self._wrap_model(self.model, training=False, dataloader=dataloader)
-        
-        batch_size = dataloader.batch_size
-        num_examples = self.num_examples(dataloader)
-        logger.info(f"***** Running evaluation *****")
-        logger.info(f"  Num examples = {num_examples}")
-        logger.info(f"  Batch size = {batch_size}")
-        
-        model.eval()
-        
-        self.callback_handler.eval_dataloader = dataloader
-        
-        loss_host = torch.tensor(0.0).to(self.args.device)
-        all_losses = torch.tensor(0.0).to(self.args.device)
-        all_preds = None
-        all_labels = None
-        
-        observed_num_examples = 0
-        
-        for step, inputs in enumerate(dataloader):
-            observed_batch_size = find_batch_size(inputs)
-            observed_num_examples += observed_batch_size
-            
-            with torch.no_grad():
-                inputs = self._prepare_inputs(inputs)
-                loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
-                loss_host += loss.detach()
-                all_losses += loss.detach() * observed_batch_size
-            
-            if all_preds is None:
-                all_preds = outputs.logits.detach().cpu().numpy()
-                all_labels = inputs["labels"].detach().cpu().numpy()
-            else:
-                all_preds = np.append(all_preds, outputs.logits.detach().cpu().numpy(), axis=0)
-                all_labels = np.append(all_labels, inputs["labels"].detach().cpu().numpy(), axis=0)
-            
-            self.control = self.callback_handler.on_prediction_step(self.args, self.state, self.control)
-        
-        loss = loss_host / len(dataloader)
-        all_losses = all_losses / observed_num_examples
-        
-        metrics = self.compute_metrics(EvalPrediction(predictions=all_preds, label_ids=all_labels))
-        metrics[f"{metric_key_prefix}_loss"] = all_losses.item()
-        
-        for key in list(metrics.keys()):
-            if not key.startswith(f"{metric_key_prefix}_"):
-                metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
-        
-        self.log(metrics)
-        
-        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, metrics)
-        
-        return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_examples)
+logger = logging.getLogger(__name__)
 
-    def evaluate(
-        self,
-        eval_dataset: Optional[Dataset] = None,
-        ignore_keys: Optional[List[str]] = None,
-        metric_key_prefix: str = "eval",
-    ) -> Dict[str, float]:
-        
-        eval_dataloader = self.get_eval_dataloader(eval_dataset)
-        
-        output = self.evaluation_loop(
-            eval_dataloader,
-            description="Evaluation",
-            prediction_loss_only=True if self.compute_metrics is None else None,
-            ignore_keys=ignore_keys,
-            metric_key_prefix=metric_key_prefix,
+def main():
+    parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
+    model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    model_args: ModelArguments
+    data_args: DataArguments
+    training_args: TrainingArguments
+
+    if (
+        os.path.exists(training_args.output_dir)
+        and os.listdir(training_args.output_dir)
+        and training_args.do_train
+        and not training_args.overwrite_output_dir
+    ):
+        raise ValueError(
+            f"Output directory ({training_args.output_dir}) already exists and is not empty. Use --overwrite_output_dir to overcome."
         )
-        
-        self.log(output.metrics)
-        
-        if self.args.tpu_metrics_debug or self.args.debug:
-            if is_torch_tpu_available():
-                xm.master_print(met.metrics_report())
-            elif is_sagemaker_mp_enabled():
-                smp.push_metrics_to_sagemaker()
-        
-        return output.metrics
 
-def find_batch_size(inputs):
-    for v in inputs.values():
-        if isinstance(v, torch.Tensor):
-            return v.shape[0]
-    return None
+    # Setup logging
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO if training_args.local_rank in [-1, 0] else logging.WARN,
+    )
+    logger.warning(
+        "Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
+        training_args.local_rank,
+        training_args.device,
+        training_args.n_gpu,
+        bool(training_args.local_rank != -1),
+        training_args.fp16,
+    )
+    logger.info("Training/evaluation parameters %s", training_args)
+    logger.info("Model parameters %s", model_args)
+    logger.info("Data parameters %s", data_args)
+
+    # Set seed
+    set_seed(training_args.seed)
+
+    num_labels = 1
+    base_model = get_model(model_args, training_args)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
+        cache_dir=model_args.cache_dir,
+        use_fast=False,
+        trust_remote_code=True,
+        token=model_args.token,
+        add_eos_token=True
+    )
+
+    if tokenizer.pad_token_id is None:
+        if tokenizer.unk_token_id is not None:
+            tokenizer.pad_token_id = tokenizer.unk_token_id
+        elif tokenizer.eod_id is not None:
+            tokenizer.pad_token_id = tokenizer.eod_id
+            tokenizer.bos_token_id = tokenizer.im_start_id
+            tokenizer.eos_token_id = tokenizer.im_end_id
+    if 'mistral' in model_args.model_name_or_path.lower():
+        tokenizer.padding_side = 'left'
+
+    config = AutoConfig.from_pretrained(
+        model_args.config_name if model_args.config_name else model_args.model_name_or_path,
+        num_labels=num_labels,
+        cache_dir=model_args.cache_dir,
+        trust_remote_code=True,
+    )
+    logger.info('Config: %s', config)
+
+    model = BiEncoderModel(model=base_model,
+                           tokenizer=tokenizer,
+                           train_batch_size=training_args.per_device_train_batch_size)
+
+    if training_args.gradient_checkpointing:
+        model.enable_input_require_grads()
+
+    train_dataset = TrainDatasetForReranker(args=data_args, tokenizer=tokenizer)
+    eval_dataset = EvalDatasetForReranker(args=data_args, tokenizer=tokenizer)
+
+    trainer = BiTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        data_collator=RerankCollator(
+            tokenizer=tokenizer,
+            query_max_len=data_args.query_max_len,
+            passage_max_len=data_args.passage_max_len,
+            pad_to_multiple_of=8,
+            return_tensors="pt",
+            padding=True
+        ),
+        tokenizer=tokenizer,
+    )
+    trainer.use_lora = model_args.use_lora
+
+    Path(training_args.output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Training with evaluation every 50 steps
+    trainer.train(
+        resume_from_checkpoint=training_args.resume_from_checkpoint,
+        eval_steps=50,
+        evaluation_strategy="steps",
+        per_device_eval_batch_size=1,
+    )
+
+    trainer.save_model()
+
+    if not model_args.use_lora:
+        checkpoint_dir = os.path.join(training_args.output_dir, "checkpoint-final")
+        trainer.deepspeed.save_checkpoint(checkpoint_dir)
+    # For convenience, we also re-save the tokenizer to the same directory,
+    # so that you can share your model easily on huggingface.co/models =)
+    if trainer.is_world_process_zero():
+        tokenizer.save_pretrained(training_args.output_dir)
+
+if __name__ == "__main__":
+    main()
