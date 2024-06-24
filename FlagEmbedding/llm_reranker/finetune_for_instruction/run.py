@@ -1,6 +1,8 @@
 import logging
 import os
 from pathlib import Path
+import numpy as np
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 from transformers import AutoConfig, AutoTokenizer
 from transformers import (
@@ -16,6 +18,20 @@ from .trainer import BiTrainer
 from .load_model import get_model
 
 logger = logging.getLogger(__name__)
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    predictions = np.argmax(logits, axis=-1)
+    
+    accuracy = accuracy_score(labels, predictions)
+    precision, recall, f1, _ = precision_recall_fscore_support(labels, predictions, average='binary')
+    
+    return {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
 
 def main():
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
@@ -110,6 +126,7 @@ def main():
             eval_dataset=eval_dataset,
             data_collator=data_collator,
             tokenizer=tokenizer,
+            compute_metrics=compute_metrics,
         )
         trainer.use_lora = model_args.use_lora
 
@@ -136,9 +153,10 @@ def main():
             trainer.log_metrics("eval", metrics)
             trainer.save_metrics("eval", metrics)
 
+        # Save final checkpoint
         if not model_args.use_lora:
             checkpoint_dir = os.path.join(training_args.output_dir, "checkpoint-final")
-            trainer.deepspeed.save_checkpoint(checkpoint_dir)
+            trainer.save_model(checkpoint_dir)
             logger.info(f"Final checkpoint saved to {checkpoint_dir}")
 
         # Save tokenizer
