@@ -1,88 +1,86 @@
-import logging
-from dataclasses import dataclass
-from typing import Dict, Optional, List, Union
-
+from transformers.trainer import Trainer, EvalLoopOutput, EvalPrediction
+from transformers.deepspeed import is_deepspeed_zero3_enabled
+from peft import get_peft_model_state_dict
 import torch
-from torch import nn, Tensor
-from transformers import AutoTokenizer
-from transformers.file_utils import ModelOutput
+import os
+import logging
+from typing import Optional,List
+import numpy as np
+from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
 
-@dataclass
-class RerankerOutput(ModelOutput):
-    loss: Optional[Tensor] = None
-    scores: Optional[Tensor] = None
-    labels: Optional[Tensor] = None
+class BiTrainer(Trainer):
+    use_lora: bool
 
-class BiEncoderModel(nn.Module):
-    def __init__(self,
-                 model: None,
-                 tokenizer: AutoTokenizer = None,
-                 train_batch_size: int = 4,
-                 ):
-        super().__init__()
-        self.model = model
-        self.tokenizer = tokenizer
-        self.cross_entropy = nn.BCEWithLogitsLoss(reduction='mean')
+    def _save(self, output_dir: Optional[str] = None, state_dict=None):
+        if not self.use_lora:
+            super()._save(output_dir, state_dict)
+            return
 
-        if self.model.config.pad_token_id is None:
-            self.model.config.pad_token_id = self.tokenizer.pad_token_id
-        self.config = self.model.config
-
-        self.train_batch_size = train_batch_size
-
-        self.yes_loc = self.tokenizer('Yes', add_special_tokens=False)['input_ids'][-1]
-
-
-    def gradient_checkpointing_enable(self, **kwargs):
-        self.model.gradient_checkpointing_enable(**kwargs)
-
-    def enable_input_require_grads(self, **kwargs):
-        self.model.enable_input_require_grads(**kwargs)
-
-    def encode(self, features):
-        if features is None:
-            return None
-        outputs = self.model(input_ids=features['input_ids'],
-                             attention_mask=features['attention_mask'],
-                             position_ids=features['position_ids'] if 'position_ids' in features.keys() else None,
-                             output_hidden_states=True)
-        _, max_indices = torch.max(features['labels'], dim=1)
-        predict_indices = max_indices - 1
-        logits = [outputs.logits[i, predict_indices[i], :] for i in range(outputs.logits.shape[0])]
-        logits = torch.stack(logits, dim=0)
-        scores = logits[:, self.yes_loc]
-        return scores.contiguous(), features['labels'][:, -1]  # Return both scores and labels
-
-    def forward(self, pair: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None):
-        ranker_logits, labels = self.encode(pair)  # Get both logits and labels
-        if self.training:
-            grouped_logits = ranker_logits.view(self.train_batch_size, -1)
-            target = torch.zeros(self.train_batch_size, device=grouped_logits.device, dtype=torch.long)
-            loss = self.compute_loss(grouped_logits, target)
+        output_dir = output_dir if output_dir is not None else self.args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info("Saving model checkpoint to %s", output_dir)
+        if not hasattr(self.model, 'save'):
+            raise NotImplementedError(
+                f'MODEL {self.model.__class__.__name__} '
+                f'does not support save interface')
         else:
-            loss = None
+            self.model.save(output_dir)
+
+        torch.save(self.args, os.path.join(output_dir, "training_args.bin"))
+
+        if is_deepspeed_zero3_enabled():
+            if state_dict is None:
+                state_dict = self.model.state_dict()
+            prefix = 'model.'
+            assert all(k.startswith(prefix) for k in state_dict.keys()), list(state_dict.keys())
+            state_dict = {k[len(prefix):]: v for k, v in state_dict.items()}
+            lora_state_dict = get_peft_model_state_dict(self.model.model, state_dict)
+            if self.args.process_index <= 0:
+                torch.save(lora_state_dict, os.path.join(output_dir, "adapter_model.bin"))
+                print(f"Save adapter model at {output_dir}")
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        outputs = model(**inputs)
+        loss = outputs.loss
+        return (loss, outputs) if return_outputs else loss
+
+    def evaluation_loop(
+        self,
+        dataloader: DataLoader,
+        description: str,
+        prediction_loss_only: Optional[bool] = None,
+        ignore_keys: Optional[List[str]] = None,
+        metric_key_prefix: str = "eval",
+    ) -> EvalLoopOutput:
+        model = self._wrap_model(self.model, training=False, dataloader=dataloader)
+        batch_size = 1
+        num_examples = self.num_examples(dataloader)
+        logger.info(f"***** Running {description} *****")
+        logger.info(f"  Num examples = {num_examples}")
+        logger.info(f"  Batch size = {batch_size}")
+        model.eval()
+        self.callback_handler.eval_dataloader = dataloader
+        all_scores = []
+        all_labels = []
+        for step, inputs in enumerate(dataloader):
+            with torch.no_grad():
+                outputs = model(**inputs)
+                scores = outputs.scores
+                labels = outputs.labels
+                if scores is not None:
+                    all_scores.append(scores.cpu().numpy())
+                    all_labels.append(labels.cpu().numpy())
         
-        return RerankerOutput(
-            loss=loss,
-            scores=ranker_logits,
-            labels=labels  # Include labels in the output
-        )
-    def compute_loss(self, scores, target):
-        # Reshape target to match scores
-        target = target.view(-1, 1).expand_as(scores)
-        return self.cross_entropy(scores, target)
-    def save(self, output_dir: str):
-        # self.model.save_pretrained(output_dir)
-        state_dict = self.model.state_dict()
-        state_dict = type(state_dict)(
-            {k: v.clone().cpu()
-             for k,
-             v in state_dict.items()})
-        self.model.save_pretrained(output_dir, state_dict=state_dict)
-
-    def save_pretrained(self, **kwargs):
-        self.tokenizer.save_pretrained(**kwargs)
-        return self.model.save_pretrained(**kwargs)
-
+        all_scores = np.concatenate(all_scores, axis=0)
+        all_labels = np.concatenate(all_labels, axis=0)
+        
+        logger.info(f"Predictions shape: {all_scores.shape}")
+        logger.info(f"Labels shape: {all_labels.shape}")
+        
+        metrics = {}
+        if self.compute_metrics is not None and len(all_labels) > 0:
+            metrics.update(self.compute_metrics(EvalPrediction(predictions=all_scores, label_ids=all_labels)))
+        self.log(metrics)
+        return EvalLoopOutput(predictions=all_scores, label_ids=all_labels, metrics=metrics, num_samples=num_examples)
