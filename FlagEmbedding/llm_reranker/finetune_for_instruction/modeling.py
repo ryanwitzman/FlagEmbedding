@@ -42,7 +42,6 @@ class BiEncoderModel(nn.Module):
         self.model.enable_input_require_grads(**kwargs)
 
     def encode(self, features):
-        # input('continue?')
         if features is None:
             return None
         outputs = self.model(input_ids=features['input_ids'],
@@ -54,24 +53,22 @@ class BiEncoderModel(nn.Module):
         logits = [outputs.logits[i, predict_indices[i], :] for i in range(outputs.logits.shape[0])]
         logits = torch.stack(logits, dim=0)
         scores = logits[:, self.yes_loc]
-        return scores.contiguous()
+        return scores.contiguous(), features['labels'][:, -1]  # Return both scores and labels
 
     def forward(self, pair: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None):
-        ranker_logits = self.encode(pair) # (batch_size * num, dim)
-
+        ranker_logits, labels = self.encode(pair)  # Get both logits and labels
         if self.training:
             grouped_logits = ranker_logits.view(self.train_batch_size, -1)
             target = torch.zeros(self.train_batch_size, device=grouped_logits.device, dtype=torch.long)
             loss = self.compute_loss(grouped_logits, target)
         else:
             loss = None
-
-        # print(loss)
+        
         return RerankerOutput(
             loss=loss,
             scores=ranker_logits,
+            labels=labels  # Include labels in the output
         )
-
     def compute_loss(self, scores, target):
         return self.cross_entropy(scores, target)
 
