@@ -24,7 +24,7 @@ class BiEncoderModel(nn.Module):
         super().__init__()
         self.model = model
         self.tokenizer = tokenizer
-        self.cross_entropy = nn.BinaryCrossEntropyLoss(reduction='mean')
+        self.cross_entropy = nn.BCELoss(reduction='mean')
 
         if self.model.config.pad_token_id is None:
             self.model.config.pad_token_id = self.tokenizer.pad_token_id
