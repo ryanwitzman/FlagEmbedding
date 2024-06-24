@@ -251,7 +251,7 @@ class EvalDatasetForReranker(Dataset):
 
 
 @dataclass
-class RerankerCollator(DataCollatorWithPadding):
+class RerankCollator(DataCollatorWithPadding):
     def __init__(self, tokenizer, padding=True, max_length=None, pad_to_multiple_of=None):
         super().__init__(tokenizer, padding=padding, max_length=max_length, pad_to_multiple_of=pad_to_multiple_of)
         self.tokenizer = tokenizer
