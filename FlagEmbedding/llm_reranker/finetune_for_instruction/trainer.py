@@ -41,6 +41,7 @@ class BiTrainer(Trainer):
                 torch.save(lora_state_dict, os.path.join(output_dir, "adapter_model.bin"))
                 print(f"Save adapter model at {output_dir}")
 
+
     def compute_loss(self, model, inputs, return_outputs=False):
         outputs = model(**inputs)
         loss = outputs.loss
@@ -55,32 +56,26 @@ class BiTrainer(Trainer):
         metric_key_prefix: str = "eval",
     ) -> EvalLoopOutput:
         model = self._wrap_model(self.model, training=False, dataloader=dataloader)
-        batch_size = 1
+        batch_size = dataloader.batch_size if dataloader.batch_size is not None else 1
         num_examples = self.num_examples(dataloader)
         logger.info(f"***** Running {description} *****")
         logger.info(f"  Num examples = {num_examples}")
         logger.info(f"  Batch size = {batch_size}")
         model.eval()
         self.callback_handler.eval_dataloader = dataloader
-        all_scores = []
-        all_labels = []
+        
+        total_loss = 0.0
+        num_batches = 0
+        
         for step, inputs in enumerate(dataloader):
             with torch.no_grad():
-                outputs = model(**inputs)
-                scores = outputs.scores
-                labels = outputs.labels
-                if scores is not None:
-                    all_scores.append(scores.cpu().numpy())
-                    all_labels.append(labels.cpu().numpy())
+                loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+                total_loss += loss.item()
+                num_batches += 1
+
+        avg_loss = total_loss / num_batches if num_batches > 0 else 0
         
-        all_scores = np.concatenate(all_scores, axis=0)
-        all_labels = np.concatenate(all_labels, axis=0)
-        
-        logger.info(f"Predictions shape: {all_scores.shape}")
-        logger.info(f"Labels shape: {all_labels.shape}")
-        
-        metrics = {}
-        if self.compute_metrics is not None and len(all_labels) > 0:
-            metrics.update(self.compute_metrics(EvalPrediction(predictions=all_scores, label_ids=all_labels)))
+        metrics = {f"{metric_key_prefix}_loss": avg_loss}
         self.log(metrics)
-        return EvalLoopOutput(predictions=all_scores, label_ids=all_labels, metrics=metrics, num_samples=num_examples)
+        
+        return EvalLoopOutput(predictions=None, label_ids=None, metrics=metrics, num_samples=num_examples)
