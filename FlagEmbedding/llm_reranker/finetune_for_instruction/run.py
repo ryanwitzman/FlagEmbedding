@@ -1,37 +1,15 @@
 import logging
 import os
 from pathlib import Path
-import numpy as np
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
-from transformers import AutoConfig, AutoTokenizer
-from transformers import (
-    HfArgumentParser,
-    set_seed,
-)
-
-from .arguments import ModelArguments, DataArguments, \
-    RetrieverTrainingArguments as TrainingArguments
-from .data import TrainDatasetForReranker, RerankCollator, EvalDatasetForReranker
+from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, set_seed
+from .arguments import ModelArguments, DataArguments, RetrieverTrainingArguments as TrainingArguments
+from .data import TrainDatasetForReranker, EvalDatasetForReranker, RerankCollator
 from .modeling import BiEncoderModel
 from .trainer import BiTrainer
 from .load_model import get_model
 
 logger = logging.getLogger(__name__)
-
-def compute_metrics(eval_pred):
-    logits, labels = eval_pred
-    predictions = np.argmax(logits, axis=-1)
-    
-    accuracy = accuracy_score(labels, predictions)
-    precision, recall, f1, _ = precision_recall_fscore_support(labels, predictions, average='binary')
-    
-    return {
-        "accuracy": accuracy,
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
-    }
 
 def main():
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
@@ -39,6 +17,16 @@ def main():
     model_args: ModelArguments
     data_args: DataArguments
     training_args: TrainingArguments
+
+    if (
+        os.path.exists(training_args.output_dir)
+        and os.listdir(training_args.output_dir)
+        and training_args.do_train
+        and not training_args.overwrite_output_dir
+    ):
+        raise ValueError(
+            f"Output directory ({training_args.output_dir}) already exists and is not empty. Use --overwrite_output_dir to overcome."
+        )
 
     # Setup logging
     logging.basicConfig(
@@ -61,112 +49,81 @@ def main():
     # Set seed
     set_seed(training_args.seed)
 
-    try:
-        num_labels = 1
-        base_model = get_model(model_args, training_args)
-        logger.info("Base model loaded successfully")
+    num_labels = 1
+    base_model = get_model(model_args, training_args)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
+        cache_dir=model_args.cache_dir,
+        use_fast=False,
+        trust_remote_code=True,
+        token=model_args.token,
+        add_eos_token=True
+    )
 
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
-            cache_dir=model_args.cache_dir,
-            use_fast=False,
-            trust_remote_code=True,
-            token=model_args.token,
-            add_eos_token=True
-        )
-        logger.info("Tokenizer loaded successfully")
+    if tokenizer.pad_token_id is None:
+        if tokenizer.unk_token_id is not None:
+            tokenizer.pad_token_id = tokenizer.unk_token_id
+        elif tokenizer.eod_id is not None:
+            tokenizer.pad_token_id = tokenizer.eod_id
+            tokenizer.bos_token_id = tokenizer.im_start_id
+            tokenizer.eos_token_id = tokenizer.im_end_id
+    if 'mistral' in model_args.model_name_or_path.lower():
+        tokenizer.padding_side = 'left'
 
-        if tokenizer.pad_token_id is None:
-            if tokenizer.unk_token_id is not None:
-                tokenizer.pad_token_id = tokenizer.unk_token_id
-            elif tokenizer.eod_id is not None:
-                tokenizer.pad_token_id = tokenizer.eod_id
-                tokenizer.bos_token_id = tokenizer.im_start_id
-                tokenizer.eos_token_id = tokenizer.im_end_id
-        if 'mistral' in model_args.model_name_or_path.lower():
-            tokenizer.padding_side = 'left'
+    config = AutoConfig.from_pretrained(
+        model_args.config_name if model_args.config_name else model_args.model_name_or_path,
+        num_labels=num_labels,
+        cache_dir=model_args.cache_dir,
+        trust_remote_code=True,
+    )
+    logger.info('Config: %s', config)
 
-        config = AutoConfig.from_pretrained(
-            model_args.config_name if model_args.config_name else model_args.model_name_or_path,
-            num_labels=num_labels,
-            cache_dir=model_args.cache_dir,
-            trust_remote_code=True,
-        )
-        logger.info('Config: %s', config)
+    model = BiEncoderModel(model=base_model,
+                           tokenizer=tokenizer,
+                           train_batch_size=training_args.per_device_train_batch_size)
 
-        model = BiEncoderModel(model=base_model,
-                               tokenizer=tokenizer,
-                               train_batch_size=training_args.per_device_train_batch_size)
-        logger.info("BiEncoderModel created successfully")
+    if training_args.gradient_checkpointing:
+        model.enable_input_require_grads()
 
-        if training_args.gradient_checkpointing:
-            model.enable_input_require_grads()
+    train_dataset = TrainDatasetForReranker(args=data_args, tokenizer=tokenizer)
+    eval_dataset = EvalDatasetForReranker(args=data_args, tokenizer=tokenizer)
 
-        train_dataset = TrainDatasetForReranker(args=data_args, tokenizer=tokenizer)
-        logger.info(f"Train dataset loaded. Size: {len(train_dataset)}")
-
-        eval_dataset = None
-        if training_args.do_eval:
-            eval_dataset = EvalDatasetForReranker(args=data_args, tokenizer=tokenizer)
-            logger.info(f"Eval dataset loaded. Size: {len(eval_dataset)}")
-
-        data_collator = RerankCollator(
+    trainer = BiTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        data_collator=RerankCollator(
             tokenizer=tokenizer,
             query_max_len=data_args.query_max_len,
             passage_max_len=data_args.passage_max_len,
             pad_to_multiple_of=8,
             return_tensors="pt",
             padding=True
-        )
+        ),
+        tokenizer=tokenizer,
+    )
+    trainer.use_lora = model_args.use_lora
 
-        trainer = BiTrainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
-            data_collator=data_collator,
-            tokenizer=tokenizer,
-            compute_metrics=compute_metrics,
-        )
-        trainer.use_lora = model_args.use_lora
+    Path(training_args.output_dir).mkdir(parents=True, exist_ok=True)
 
-        Path(training_args.output_dir).mkdir(parents=True, exist_ok=True)
+    # Training with evaluation every 50 steps
+    trainer.train(
+        resume_from_checkpoint=training_args.resume_from_checkpoint,
+        eval_steps=50,
+        evaluation_strategy="steps",
+        per_device_eval_batch_size=1,
+    )
 
-        # Training
-        if training_args.do_train:
-            logger.info("*** Start Training ***")
-            train_result = trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
-            trainer.save_model()
-            logger.info("*** Training completed ***")
-            
-            # Log and save training results
-            logger.info(f"*** Training metrics: {train_result.metrics} ***")
-            trainer.log_metrics("train", train_result.metrics)
-            trainer.save_metrics("train", train_result.metrics)
-            trainer.save_state()
+    trainer.save_model()
 
-        # Evaluation
-        if training_args.do_eval:
-            logger.info("*** Start Evaluation ***")
-            metrics = trainer.evaluate()
-            logger.info(f"*** Evaluation metrics: {metrics} ***")
-            trainer.log_metrics("eval", metrics)
-            trainer.save_metrics("eval", metrics)
-
-        # Save final checkpoint
-        if not model_args.use_lora:
-            checkpoint_dir = os.path.join(training_args.output_dir, "checkpoint-final")
-            trainer.save_model(checkpoint_dir)
-            logger.info(f"Final checkpoint saved to {checkpoint_dir}")
-
-        # Save tokenizer
-        if trainer.is_world_process_zero():
-            tokenizer.save_pretrained(training_args.output_dir)
-            logger.info(f"Tokenizer saved to {training_args.output_dir}")
-
-    except Exception as e:
-        logger.error(f"An error occurred: {str(e)}", exc_info=True)
-        raise
+    if not model_args.use_lora:
+        checkpoint_dir = os.path.join(training_args.output_dir, "checkpoint-final")
+        trainer.deepspeed.save_checkpoint(checkpoint_dir)
+    # For convenience, we also re-save the tokenizer to the same directory,
+    # so that you can share your model easily on huggingface.co/models =)
+    if trainer.is_world_process_zero():
+        tokenizer.save_pretrained(training_args.output_dir)
 
 if __name__ == "__main__":
     main()
