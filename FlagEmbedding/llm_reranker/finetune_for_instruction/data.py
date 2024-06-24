@@ -1,7 +1,9 @@
 import re
 import sys
 from typing import List
-from typing import Dict,Union,Tensor
+from typing import Dict,Union
+from torch import Tensor
+
 import math
 import os.path
 import random
