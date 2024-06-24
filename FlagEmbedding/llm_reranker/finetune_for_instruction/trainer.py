@@ -48,3 +48,49 @@ class BiTrainer(Trainer):
         loss = outputs.loss
 
         return (loss, outputs) if return_outputs else loss
+    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
+        eval_dataloader = self.get_eval_dataloader(eval_dataset)
+        
+        # Initialize containers for evaluation results
+        all_losses = []
+        all_preds = []
+        all_labels = []
+        
+        # Set model to evaluation mode
+        self.model.eval()
+        
+        for batch in eval_dataloader:
+            with torch.no_grad():
+                # Move batch to device
+                batch = {k: v.to(self.args.device) for k, v in batch.items()}
+                
+                # Forward pass
+                outputs = self.model(**batch)
+                
+                # Compute loss
+                loss = outputs.loss
+                all_losses.append(loss.item())
+                
+                # Get predictions and labels
+                preds = outputs.logits.argmax(dim=-1)
+                labels = batch["labels"]
+                
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+        
+        # Compute average loss
+        avg_loss = sum(all_losses) / len(all_losses)
+        
+        # Compute accuracy
+        accuracy = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_preds)
+        
+        # Create metrics dict
+        metrics = {
+            f"{metric_key_prefix}_loss": avg_loss,
+            f"{metric_key_prefix}_accuracy": accuracy,
+        }
+        
+        # Log results
+        self.log(metrics)
+        
+        return metrics
