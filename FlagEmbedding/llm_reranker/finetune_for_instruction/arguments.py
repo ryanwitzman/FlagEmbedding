@@ -30,12 +30,13 @@ class ModelArguments:
         metadata={"help": "If passed, will use a slow tokenizer (not backed by the 🤗 Tokenizers library)."}
     )
     low_cpu_mem_usage: bool = field(
-        default=False,
-        metadata={"help": "It is an option to create the model as an empty shell, "
+        defa        metadata={"help": "It is an option to create the model as an empty shell, "
                           "then only materialize its parameters when the pretrained weights are loaded."}
     )
     cache_dir: str = field(
-        default="tmp", metadata={"help": "the cache of the model"}
+        default="tmp", metadata={"help": "the     )
+    token: Optional[str] = field(
+        default=None, metadata={"help": "The token to access the Hugging Face model hub"}
     )
 
 
