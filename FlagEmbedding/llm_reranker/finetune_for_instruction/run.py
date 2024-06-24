@@ -92,6 +92,7 @@ def main():
         model.enable_input_require_grads()
 
     train_dataset = TrainDatasetForReranker(args=data_args, tokenizer=tokenizer)
+    data_args.batch_size=1
     eval_dataset = TrainDatasetForReranker(args=data_args, tokenizer=tokenizer)
 
     trainer = BiTrainer(
