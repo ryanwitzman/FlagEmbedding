@@ -4,6 +4,10 @@ from peft import get_peft_model_state_dict
 import torch
 from torch.utils.data import DataLoader
 from typing import Dict, List, Optional, Union
+import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 class BiTrainer(Trainer):
     use_lora: bool
@@ -11,6 +15,7 @@ class BiTrainer(Trainer):
         outputs = model(**inputs)
         loss = outputs.loss
         return (loss, outputs) if return_outputs else loss
+    
     def evaluation_loop(
         self,
         dataloader: DataLoader,
@@ -35,7 +40,7 @@ class BiTrainer(Trainer):
         
         for step, inputs in enumerate(dataloader):
             with torch.no_grad():
-                outputs = model(inputs)
+                outputs = model(**inputs)
                 loss = outputs.loss
                 if loss is not None:
                     total_loss += loss.item()
