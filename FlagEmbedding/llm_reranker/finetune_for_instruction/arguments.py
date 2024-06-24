@@ -75,6 +75,38 @@ class DataArguments:
     passage_instruction_for_retrieval: str = field(
         default="B: ", metadata={"help": "passage instruction"}
     )
+    cache_path: str = field(
+        default='./data_dir'
+    )
+
+    load_from_disk: bool = field(
+        default=False, metadata={"help": " whether load the data from disk"}
+    )
+
+    load_disk_path: str = field(
+        default=None, metadata={"help": " the path to load the data", "nargs": "+"}
+    )
+
+    save_to_disk: bool = field(
+        default=False, metadata={"help": " whether save the data to disk"}
+    )
+
+    save_disk_path: str = field(
+        default=None, metadata={"help": " the path to save the data"}
+    )
+
+    num_shards: int = field(
+        default=0, metadata={
+            "help": "number of shards to write, prior than `save_max_shard_size`, default depends on `save_max_shard_size`"}
+    )
+
+    save_max_shard_size: str = field(
+        default="50GB", metadata={"help": "the max size of the shard"}
+    )
+
+    exit_after_save: bool = field(
+        default=False, metadata={"help": " whether exit after save the data"}
+    )
 
 
 @dataclass
