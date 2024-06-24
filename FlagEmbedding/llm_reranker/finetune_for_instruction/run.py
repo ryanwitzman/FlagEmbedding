@@ -119,7 +119,6 @@ def main():
             padding=True
         )
 
-        # Update the Trainer configuration to include evaluation strategy
         trainer = BiTrainer(
             model=model,
             args=training_args,
@@ -130,10 +129,6 @@ def main():
             compute_metrics=compute_metrics,
         )
         trainer.use_lora = model_args.use_lora
-
-        # Set evaluation strategy
-        trainer.args.evaluation_strategy = "steps"
-        trainer.args.eval_steps = training_args.eval_steps  # Make sure this argument is defined in your TrainingArguments
 
         Path(training_args.output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -150,11 +145,11 @@ def main():
             trainer.save_metrics("train", train_result.metrics)
             trainer.save_state()
 
-        # Final Evaluation
+        # Evaluation
         if training_args.do_eval:
-            logger.info("*** Start Final Evaluation ***")
+            logger.info("*** Start Evaluation ***")
             metrics = trainer.evaluate()
-            logger.info(f"*** Final Evaluation metrics: {metrics} ***")
+            logger.info(f"*** Evaluation metrics: {metrics} ***")
             trainer.log_metrics("eval", metrics)
             trainer.save_metrics("eval", metrics)
 
