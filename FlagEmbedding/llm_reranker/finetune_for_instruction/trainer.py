@@ -55,7 +55,7 @@ class BiTrainer(Trainer):
         metric_key_prefix: str = "eval",
     ) -> EvalLoopOutput:
         model = self._wrap_model(self.model, training=False, dataloader=dataloader)
-        batch_size = dataloader.batch_size
+        batch_size = 1
         num_examples = self.num_examples(dataloader)
         logger.info(f"***** Running {description} *****")
         logger.info(f"  Num examples = {num_examples}")
