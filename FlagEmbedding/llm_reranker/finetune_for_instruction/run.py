@@ -10,7 +10,7 @@ from transformers import (
 
 from .arguments import ModelArguments, DataArguments, \
     RetrieverTrainingArguments as TrainingArguments
-from .data import TrainDatasetForReranker, RerankCollator, EvalDatasetForReranker
+from .data import TrainDatasetForReranker, RerankCollator
 from .modeling import BiEncoderModel
 from .trainer import BiTrainer
 from .load_model import get_model
@@ -89,31 +89,25 @@ def main():
                            tokenizer=tokenizer,
                            train_batch_size=training_args.per_device_train_batch_size)
 
+    # model = base_model
+
     if training_args.gradient_checkpointing:
         model.enable_input_require_grads()
 
     train_dataset = TrainDatasetForReranker(args=data_args, tokenizer=tokenizer)
 
-    # Add evaluation dataset
-    eval_dataset = None
-    if training_args.do_eval:
-        eval_dataset = EvalDatasetForReranker(args=data_args, tokenizer=tokenizer)
-
-    data_collator = RerankCollator(
-        tokenizer=tokenizer,
-        query_max_len=data_args.query_max_len,
-        passage_max_len=data_args.passage_max_len,
-        pad_to_multiple_of=8,
-        return_tensors="pt",
-        padding=True
-    )
-
     trainer = BiTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        data_collator=data_collator,
+        data_collator=RerankCollator(
+            tokenizer=tokenizer,
+            query_max_len=data_args.query_max_len,
+            passage_max_len=data_args.passage_max_len,
+            pad_to_multiple_of=8,
+            return_tensors="pt",
+            padding=True
+        ),
         tokenizer=tokenizer,
     )
     trainer.use_lora = model_args.use_lora
@@ -124,13 +118,6 @@ def main():
     trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
     trainer.save_model()
 
-    # Evaluation
-    if training_args.do_eval:
-        logger.info("*** Evaluate ***")
-        metrics = trainer.evaluate()
-        trainer.log_metrics("eval", metrics)
-        trainer.save_metrics("eval", metrics)
-
     if not model_args.use_lora:
         checkpoint_dir = os.path.join(training_args.output_dir, "checkpoint-final")
         trainer.deepspeed.save_checkpoint(checkpoint_dir)
@@ -140,3 +127,5 @@ def main():
         tokenizer.save_pretrained(training_args.output_dir)
 
 
+if __name__ == "__main__":
+    main()
