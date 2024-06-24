@@ -17,13 +17,13 @@ class BiTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
     
     def evaluation_loop(
-        self,
-        dataloader: DataLoader,
-        description: str,
-        prediction_loss_only: Optional[bool] = None,
-        ignore_keys: Optional[List[str]] = None,
-        metric_key_prefix: str = "eval",
-    ) -> EvalLoopOutput:
+    self,
+    dataloader: DataLoader,
+    description: str,
+    prediction_loss_only: Optional[bool] = None,
+    ignore_keys: Optional[List[str]] = None,
+    metric_key_prefix: str = "eval",
+) -> EvalLoopOutput:
         model = self._wrap_model(self.model, training=False, dataloader=dataloader)
         batch_size = dataloader.batch_size
         num_examples = self.num_examples(dataloader)
@@ -41,13 +41,18 @@ class BiTrainer(Trainer):
         for step, inputs in enumerate(dataloader):
             with torch.no_grad():
                 outputs = model(**inputs)
-                loss = outputs.loss
-                logger.info(loss)
+                # Ensure that the loss is extracted correctly
+                if isinstance(outputs, dict):
+                    loss = outputs.get("loss", None)
+                    scores = outputs.get("scores", None)
+                else:
+                    loss = outputs.loss
+                    scores = outputs.scores
                 if loss is not None:
                     total_loss += loss.item()
                 
-                if not prediction_loss_only:
-                    all_preds.append(outputs.scores.cpu().numpy())
+                if not prediction_loss_only and scores is not None:
+                    all_preds.append(scores.cpu().numpy())
                     if 'labels' in inputs:
                         all_labels.append(inputs['labels'].cpu().numpy())
         
@@ -63,7 +68,7 @@ class BiTrainer(Trainer):
         
         self.log(metrics)
         return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_examples)
-
+        
     def evaluate(
         self,
         eval_dataset: Optional[Dataset] = None,
