@@ -60,28 +60,27 @@ class BiTrainer(Trainer):
         logger.info(f"***** Running {description} *****")
         logger.info(f"  Num examples = {num_examples}")
         logger.info(f"  Batch size = {batch_size}")
-
         model.eval()
         self.callback_handler.eval_dataloader = dataloader
-
         all_scores = []
         all_labels = []
-
         for step, inputs in enumerate(dataloader):
             with torch.no_grad():
                 outputs = model(**inputs)
-                scores = outputs.get("scores", None)
+                scores = outputs.scores
+                labels = outputs.labels
                 if scores is not None:
                     all_scores.append(scores.cpu().numpy())
-                    if 'labels' in inputs:
-                        all_labels.append(inputs['labels'].cpu().numpy())
-
+                    all_labels.append(labels.cpu().numpy())
+        
         all_scores = np.concatenate(all_scores, axis=0)
-        all_labels = np.concatenate(all_labels, axis=0) if all_labels else np.array([])
-
+        all_labels = np.concatenate(all_labels, axis=0)
+        
+        logger.info(f"Predictions shape: {all_scores.shape}")
+        logger.info(f"Labels shape: {all_labels.shape}")
+        
         metrics = {}
-        if self.compute_metrics is not None:
+        if self.compute_metrics is not None and len(all_labels) > 0:
             metrics.update(self.compute_metrics(EvalPrediction(predictions=all_scores, label_ids=all_labels)))
-
         self.log(metrics)
         return EvalLoopOutput(predictions=all_scores, label_ids=all_labels, metrics=metrics, num_samples=num_examples)
