@@ -39,7 +39,12 @@ class ModelArguments:
     token: Optional[str] = field(
         default=None, metadata={"help": "The token to access the Hugging Face model hub"}
     )
-
+    from_peft: str = field(
+        default=None
+    )
+    lora_extra_parameters: str = field(
+        default=None
+    )
 
 
 @dataclass
