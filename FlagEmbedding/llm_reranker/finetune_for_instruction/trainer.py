@@ -12,26 +12,39 @@ class BiTrainer(Trainer):
         if not self.use_lora:
             super()._save(output_dir, state_dict)
             return
+        
         output_dir = output_dir if output_dir is not None else self.args.output_dir
         os.makedirs(output_dir, exist_ok=True)
         logger.info("Saving model checkpoint to %s", output_dir)
+        
         if not hasattr(self.model, 'save'):
             raise NotImplementedError(
                 f'MODEL {self.model.__class__.__name__} '
                 f'does not support save interface')
         else:
             self.model.save(output_dir)
+        
         torch.save(self.args, os.path.join(output_dir, "training_args.bin"))
+        
         if is_deepspeed_zero3_enabled():
             if state_dict is None:
                 state_dict = self.model.state_dict()
+            
             prefix = 'model.'
             assert all(k.startswith(prefix) for k in state_dict.keys()), list(state_dict.keys())
             state_dict = {k[len(prefix):]: v for k, v in state_dict.items()}
             lora_state_dict = get_peft_model_state_dict(self.model.model, state_dict)
+            
             if self.args.process_index <= 0:
-                torch.save(lora_state_dict, os.path.join(output_dir, "adapter_model.bin"))
-                print(f"Save adapter model at {output_dir}")
+                # Save using safetensors
+                safe_lora_state_dict = {k: v.clone().cpu() for k, v in lora_state_dict.items()}
+                save_file(safe_lora_state_dict, os.path.join(output_dir, "adapter_model.safetensors"))
+                print(f"Saved adapter model at {output_dir}")
+        
+        # Save the full model state dict separately
+        full_state_dict = self.model.state_dict()
+        torch.save(full_state_dict, os.path.join(output_dir, "pytorch_model.bin"))
+        print(f"Saved full model state dict at {output_dir}")
 
     def compute_loss(self, model, inputs, return_outputs=False):
         outputs = model(**inputs)
