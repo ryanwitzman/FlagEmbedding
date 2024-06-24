@@ -86,6 +86,7 @@ def main():
     model = BiEncoderModel(model=base_model,
                            tokenizer=tokenizer,
                            train_batch_size=training_args.per_device_train_batch_size)
+    logger.info(vars(training_args))
 
     if training_args.gradient_checkpointing:
         model.enable_input_require_grads()
