@@ -70,8 +70,9 @@ class BiEncoderModel(nn.Module):
             labels=labels  # Include labels in the output
         )
     def compute_loss(self, scores, target):
+        # Reshape target to match scores
+        target = target.view(-1, 1).expand_as(scores)
         return self.cross_entropy(scores, target)
-
     def save(self, output_dir: str):
         # self.model.save_pretrained(output_dir)
         state_dict = self.model.state_dict()
