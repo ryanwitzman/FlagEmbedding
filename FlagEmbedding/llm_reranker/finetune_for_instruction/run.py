@@ -4,7 +4,7 @@ from pathlib import Path
 
 from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, set_seed
 from .arguments import ModelArguments, DataArguments, RetrieverTrainingArguments as TrainingArguments
-from .data import TrainDatasetForReranker, RerankCollator
+from .data import TrainDatasetForReranker, EvalDatasetForReranker,RerankCollator
 from .modeling import BiEncoderModel
 from .trainer import BiTrainer
 from .load_model import get_model
@@ -93,7 +93,7 @@ def main():
 
     train_dataset = TrainDatasetForReranker(args=data_args, tokenizer=tokenizer)
     data_args.batch_size=1
-    eval_dataset = TrainDatasetForReranker(args=data_args, tokenizer=tokenizer)
+    eval_dataset = EvalDatasetForReranker(args=data_args, tokenizer=tokenizer)
 
     trainer = BiTrainer(
         model=model,
