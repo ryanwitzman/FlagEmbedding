@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class RerankerOutput(ModelOutput):
     loss: Optional[Tensor] = None
     scores: Optional[Tensor] = None
-
+    labels: Optional[Tensor] = None
 
 class BiEncoderModel(nn.Module):
     def __init__(self,
