@@ -4,6 +4,7 @@ from peft import get_peft_model_state_dict
 import torch
 import os
 import logging
+from typing import Optional
 import numpy as np
 from torch.utils.data import DataLoader
 
