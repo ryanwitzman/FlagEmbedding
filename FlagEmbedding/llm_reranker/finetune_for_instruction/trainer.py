@@ -1,9 +1,9 @@
 from transformers.trainer import *
 from transformers.deepspeed import is_deepspeed_zero3_enabled
-from transformers.trainer import *
-from transformers.deepspeed import is_deepspeed_zero3_enabled
 from peft import get_peft_model_state_dict
-
+import torch
+from torch.utils.data import DataLoader
+from typing import Dict, List, Optional, Union
 
 class BiTrainer(Trainer):
     use_lora: bool
@@ -12,23 +12,16 @@ class BiTrainer(Trainer):
         if not self.use_lora:
             super()._save(output_dir, state_dict)
             return
-
         output_dir = output_dir if output_dir is not None else self.args.output_dir
         os.makedirs(output_dir, exist_ok=True)
         logger.info("Saving model checkpoint to %s", output_dir)
-        # Save a trained model and configuration using `save_pretrained()`.
-        # They can then be reloaded using `from_pretrained()`
         if not hasattr(self.model, 'save'):
             raise NotImplementedError(
                 f'MODEL {self.model.__class__.__name__} '
                 f'does not support save interface')
         else:
             self.model.save(output_dir)
-        # if self.tokenizer is not None and self.is_world_process_zero():
-        #     self.tokenizer.save_pretrained(output_dir)
-
         torch.save(self.args, os.path.join(output_dir, "training_args.bin"))
-
         if is_deepspeed_zero3_enabled():
             if state_dict is None:
                 state_dict = self.model.state_dict()
@@ -41,58 +34,102 @@ class BiTrainer(Trainer):
                 print(f"Save adapter model at {output_dir}")
 
     def compute_loss(self, model, inputs, return_outputs=False):
-        """
-        How the loss is computed by Trainer. By default, all models return the loss in the first element.
-
-        Subclass and override for custom behavior.
-        """
         outputs = model(**inputs)
         loss = outputs.loss
-
         return (loss, outputs) if return_outputs else loss
-    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
-        eval_dataloader = self.get_eval_dataloader(eval_dataset)
+
+    def evaluation_loop(
+        self,
+        dataloader: DataLoader,
+        description: str,
+        prediction_loss_only: Optional[bool] = None,
+        ignore_keys: Optional[List[str]] = None,
+        metric_key_prefix: str = "eval",
+    ) -> EvalLoopOutput:
         
-        # Initialize containers for evaluation results
-        all_losses = []
-        all_preds = []
-        all_labels = []
+        model = self._wrap_model(self.model, training=False, dataloader=dataloader)
         
-        # Set model to evaluation mode
-        self.model.eval()
+        batch_size = dataloader.batch_size
+        num_examples = self.num_examples(dataloader)
+        logger.info(f"***** Running evaluation *****")
+        logger.info(f"  Num examples = {num_examples}")
+        logger.info(f"  Batch size = {batch_size}")
         
-        for batch in eval_dataloader:
+        model.eval()
+        
+        self.callback_handler.eval_dataloader = dataloader
+        
+        loss_host = torch.tensor(0.0).to(self.args.device)
+        all_losses = torch.tensor(0.0).to(self.args.device)
+        all_preds = None
+        all_labels = None
+        
+        observed_num_examples = 0
+        
+        for step, inputs in enumerate(dataloader):
+            observed_batch_size = find_batch_size(inputs)
+            observed_num_examples += observed_batch_size
+            
             with torch.no_grad():
-                # Move batch to device
-                batch = {k: v.to(self.args.device) for k, v in batch.items()}
-                
-                # Forward pass
-                outputs = self.model(**batch)
-                
-                # Compute loss
-                loss = outputs.loss
-                all_losses.append(loss.item())
-                
-                # Get predictions and labels
-                preds = outputs.logits.argmax(dim=-1)
-                labels = batch["labels"]
-                
-                all_preds.extend(preds.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
+                inputs = self._prepare_inputs(inputs)
+                loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+                loss_host += loss.detach()
+                all_losses += loss.detach() * observed_batch_size
+            
+            if all_preds is None:
+                all_preds = outputs.logits.detach().cpu().numpy()
+                all_labels = inputs["labels"].detach().cpu().numpy()
+            else:
+                all_preds = np.append(all_preds, outputs.logits.detach().cpu().numpy(), axis=0)
+                all_labels = np.append(all_labels, inputs["labels"].detach().cpu().numpy(), axis=0)
+            
+            self.control = self.callback_handler.on_prediction_step(self.args, self.state, self.control)
         
-        # Compute average loss
-        avg_loss = sum(all_losses) / len(all_losses)
+        loss = loss_host / len(dataloader)
+        all_losses = all_losses / observed_num_examples
         
-        # Compute accuracy
-        accuracy = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_preds)
+        metrics = self.compute_metrics(EvalPrediction(predictions=all_preds, label_ids=all_labels))
+        metrics[f"{metric_key_prefix}_loss"] = all_losses.item()
         
-        # Create metrics dict
-        metrics = {
-            f"{metric_key_prefix}_loss": avg_loss,
-            f"{metric_key_prefix}_accuracy": accuracy,
-        }
+        for key in list(metrics.keys()):
+            if not key.startswith(f"{metric_key_prefix}_"):
+                metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
         
-        # Log results
         self.log(metrics)
         
-        return metrics
+        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, metrics)
+        
+        return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_examples)
+
+    def evaluate(
+        self,
+        eval_dataset: Optional[Dataset] = None,
+        ignore_keys: Optional[List[str]] = None,
+        metric_key_prefix: str = "eval",
+    ) -> Dict[str, float]:
+        
+        eval_dataloader = self.get_eval_dataloader(eval_dataset)
+        
+        output = self.evaluation_loop(
+            eval_dataloader,
+            description="Evaluation",
+            prediction_loss_only=True if self.compute_metrics is None else None,
+            ignore_keys=ignore_keys,
+            metric_key_prefix=metric_key_prefix,
+        )
+        
+        self.log(output.metrics)
+        
+        if self.args.tpu_metrics_debug or self.args.debug:
+            if is_torch_tpu_available():
+                xm.master_print(met.metrics_report())
+            elif is_sagemaker_mp_enabled():
+                smp.push_metrics_to_sagemaker()
+        
+        return output.metrics
+
+def find_batch_size(inputs):
+    for v in inputs.values():
+        if isinstance(v, torch.Tensor):
+            return v.shape[0]
+    return None
