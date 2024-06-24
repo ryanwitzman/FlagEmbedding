@@ -127,6 +127,7 @@ class RetrieverTrainingArguments(TrainingArguments):
     fp16: bool = field(default=False)
     do_train: bool = field(default=True)
     do_eval: bool = field(default=True)
+    evaluation_strategy: str = field(default="steps")
     ddp_find_unused_parameters: bool = field(default=False)
     overwrite_output_dir: bool = field(default=True)
     loss_type: str = field(default="only logits")
