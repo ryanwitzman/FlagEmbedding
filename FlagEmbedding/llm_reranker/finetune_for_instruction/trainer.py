@@ -9,34 +9,37 @@ class BiTrainer(Trainer):
     use_lora: bool
 
     def _save(self, output_dir: Optional[str] = None, state_dict=None):
+        # If not using LoRA, use the default saving method
         if not self.use_lora:
-            super()._save(output_dir, state_dict)
-            return
+            return super()._save(output_dir, state_dict)
         
         output_dir = output_dir if output_dir is not None else self.args.output_dir
         os.makedirs(output_dir, exist_ok=True)
-        logger.info("Saving model checkpoint to %s", output_dir)
+        self.logger.info(f"Saving model checkpoint to {output_dir}")
         
-        if not hasattr(self.model, 'save'):
-            raise NotImplementedError(
-                f'MODEL {self.model.__class__.__name__} '
-                f'does not support save interface')
-        else:
+        # Save the model using its own save method if available
+        if hasattr(self.model, 'save'):
             self.model.save(output_dir)
+        else:
+            raise NotImplementedError(f'MODEL {self.model.__class__.__name__} does not support save interface')
         
+        # Save training arguments
         torch.save(self.args, os.path.join(output_dir, "training_args.bin"))
         
+        # Handle DeepSpeed ZeRO-3 case
         if is_deepspeed_zero3_enabled():
             if state_dict is None:
                 state_dict = self.model.state_dict()
             
+            # Remove 'model.' prefix from state dict keys
             prefix = 'model.'
-            assert all(k.startswith(prefix) for k in state_dict.keys()), list(state_dict.keys())
-            state_dict = {k[len(prefix):]: v for k, v in state_dict.items()}
+            state_dict = {k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix)}
+            
+            # Get LoRA state dict
             lora_state_dict = get_peft_model_state_dict(self.model.model, state_dict)
             
+            # Save LoRA state dict using safetensors
             if self.args.process_index <= 0:
-                # Save using safetensors
                 safe_lora_state_dict = {k: v.clone().cpu() for k, v in lora_state_dict.items()}
                 save_file(safe_lora_state_dict, os.path.join(output_dir, "adapter_model.safetensors"))
                 print(f"Saved adapter model at {output_dir}")
