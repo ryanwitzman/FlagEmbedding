@@ -18,6 +18,11 @@ def main():
     data_args: DataArguments
     training_args: TrainingArguments
 
+    # Modify training arguments
+    training_args.do_eval = True
+    training_args.per_device_eval_batch_size = 1
+    training_args.eval_steps = 50
+
     if (
         os.path.exists(training_args.output_dir)
         and os.listdir(training_args.output_dir)
@@ -87,9 +92,6 @@ def main():
 
     train_dataset = TrainDatasetForReranker(args=data_args, tokenizer=tokenizer)
     eval_dataset = EvalDatasetForReranker(args=data_args, tokenizer=tokenizer)
-    training_args.eval_steps=50
-    training_args.per_device_eval_batch_size=1
-    training_args.evaluation_strategy=True
 
     trainer = BiTrainer(
         model=model,
@@ -105,7 +107,6 @@ def main():
             padding=True
         ),
         tokenizer=tokenizer,
-        
     )
 
     Path(training_args.output_dir).mkdir(parents=True, exist_ok=True)
