@@ -251,33 +251,51 @@ class EvalDatasetForReranker(Dataset):
 
 
 @dataclass
-class RerankCollator(DataCollatorWithPadding):
-    def __init__(self, tokenizer, padding=True, max_length=None, pad_to_multiple_of=None):
-        super().__init__(tokenizer, padding=padding, max_length=max_length, pad_to_multiple_of=pad_to_multiple_of)
-        self.tokenizer = tokenizer
+class RerankCollator(DataCollatorForSeq2Seq):
+    query_max_len: int = 32
+    passage_max_len: int = 128
+    padding: str = "longest"
+    max_length: Optional[int] = None
+    pad_to_multiple_of: Optional[int] = None
+    label_pad_token_id: int = -100
+    return_tensors: str = "pt"
 
-    def __call__(self, features: List[Dict[str, Union[List[int], Tensor]]]) -> Dict[str, Tensor]:
-        # Extract the 'input_ids', 'attention_mask', and 'labels' from the features
-        input_ids = [feature['input_ids'] for feature in features]
-        attention_mask = [feature['attention_mask'] for feature in features]
-        labels = [feature['labels'] for feature in features]
+    def __call__(self, features: List[Dict[str, Union[List[int], Tensor]]], return_tensors: Optional[str] = None) -> Dict[str, Tensor]:
+        if return_tensors is None:
+            return_tensors = self.return_tensors
 
-        # Tokenize and pad the input sequences
-        batch = self.tokenizer.pad(
-            {'input_ids': input_ids, 'attention_mask': attention_mask},
+        if isinstance(features[0], list):
+            features = sum(features, [])
+
+        labels = [feature["labels"] for feature in features] if "labels" in features[0].keys() else None
+
+        if labels is not None:
+            max_label_length = max(len(l) for l in labels)
+            if self.pad_to_multiple_of is not None:
+                max_label_length = (
+                    (max_label_length + self.pad_to_multiple_of - 1)
+                    // self.pad_to_multiple_of
+                    * self.pad_to_multiple_of
+                )
+
+            padding_side = self.tokenizer.padding_side
+            for feature in features:
+                remainder = [self.label_pad_token_id] * (max_label_length - len(feature["labels"]))
+                if isinstance(feature["labels"], list):
+                    feature["labels"] = (
+                        feature["labels"] + remainder if padding_side == "right" else remainder + feature["labels"]
+                    )
+                elif padding_side == "right":
+                    feature["labels"] = np.concatenate([feature["labels"], remainder]).astype(np.int64)
+                else:
+                    feature["labels"] = np.concatenate([remainder, feature["labels"]]).astype(np.int64)
+
+        collated = self.tokenizer.pad(
+            features,
             padding=self.padding,
-            max_length=self.max_length,
+            max_length=self.query_max_len + self.passage_max_len,
+            return_tensors=return_tensors,
             pad_to_multiple_of=self.pad_to_multiple_of,
-            return_tensors='pt'
         )
 
-        # Pad the labels and convert to tensor
-        max_label_length = max(len(label) for label in labels)
-        padded_labels = []
-        for label in labels:
-            padded_label = label + [self.tokenizer.pad_token_id] * (max_label_length - len(label))
-            padded_labels.append(padded_label)
-
-        batch['labels'] = torch.tensor(padded_labels, dtype=torch.long)
-
-        return batch
+        return {"pair": collated}
