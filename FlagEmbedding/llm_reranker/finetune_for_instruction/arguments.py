@@ -4,6 +4,9 @@ from typing import Optional, List
 
 from transformers import TrainingArguments
 
+def default_list() -> List[str]:
+    return ["q_proj", "v_proj", "o_proj", "down_proj", "up_proj", "gate_proj"]
+
 @dataclass
 class ModelArguments:
     model_name_or_path: str = field(
@@ -17,8 +20,27 @@ class ModelArguments:
         default=None, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
     )
     use_lora: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "If passed, will use LORA (low-rank parameter-efficient training) to train the model."}
+    )
+    lora_rank: int = field(
+        default=64,
+        metadata={"help": "The rank of lora."}
+    )
+    lora_alpha: float = field(
+        default=16,
+        metadata={"help": "The alpha parameter of lora."}
+    )
+    lora_dropout: float = field(
+        default=0.1,
+        metadata={"help": "The dropout rate of lora modules."}
+    )
+    target_modules: List[str] = field(
+        default_factory=default_list
+    )
+    save_merged_lora_model: bool = field(
+        default=False,
+        metadata={"help": "If passed, will merge the lora modules and save the entire model."}
     )
     use_flash_attn: bool = field(
         default=True,
@@ -31,7 +53,8 @@ class ModelArguments:
     low_cpu_mem_usage: bool = field(
         default=False,
         metadata={"help": "It is an option to create the model as an empty shell, "
-                          "then only materialize its parameters when the pretrained weights are loaded."}
+                          "then only materialize its parameters when the pretrained weights are loaded. "
+                          "If passed, LLM loading time and RAM consumption will be benefited."}
     )
     cache_dir: str = field(
         default="tmp", metadata={"help": "the cache of the model"}
@@ -45,7 +68,9 @@ class ModelArguments:
     lora_extra_parameters: str = field(
         default=None
     )
-
+    peft_model_path: str = field(
+        default=''
+    )
 
 @dataclass
 class DataArguments:
@@ -78,36 +103,28 @@ class DataArguments:
     cache_path: str = field(
         default='./data_dir'
     )
-
     load_from_disk: bool = field(
         default=False, metadata={"help": " whether load the data from disk"}
     )
-
     load_disk_path: str = field(
         default=None, metadata={"help": " the path to load the data", "nargs": "+"}
     )
-
     save_to_disk: bool = field(
         default=False, metadata={"help": " whether save the data to disk"}
     )
-
     save_disk_path: str = field(
         default=None, metadata={"help": " the path to save the data"}
     )
-
     num_shards: int = field(
         default=0, metadata={
             "help": "number of shards to write, prior than `save_max_shard_size`, default depends on `save_max_shard_size`"}
     )
-
     save_max_shard_size: str = field(
         default="50GB", metadata={"help": "the max size of the shard"}
     )
-
     exit_after_save: bool = field(
         default=False, metadata={"help": " whether exit after save the data"}
     )
-
 
 @dataclass
 class RetrieverTrainingArguments(TrainingArguments):
