@@ -4,7 +4,7 @@ from pathlib import Path
 
 from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, set_seed
 from .arguments import ModelArguments, DataArguments, RetrieverTrainingArguments as TrainingArguments
-from .data import TrainDatasetForReranker, EvalDatasetForReranker, RerankCollator
+from .data import TrainDatasetForReranker, RerankCollator
 from .modeling import BiEncoderModel
 from .trainer import BiTrainer
 from .load_model import get_model
