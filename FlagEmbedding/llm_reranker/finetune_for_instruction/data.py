@@ -4,7 +4,6 @@ import random
 from dataclasses import dataclass
 from typing import List, Dict
 
-import datasets
 import torch
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer
@@ -23,6 +22,10 @@ class RerankCollator:
     def __call__(self, features: List[Dict]) -> Dict[str, torch.Tensor]:
         query = [f["query"] for f in features]
         passage = [f["passage"] for f in features]
+
+        # Flatten passage list if it's a list of lists
+        if isinstance(passage[0], list):
+            passage = [p for sublist in passage for p in sublist]
 
         batch_query = self.tokenizer(
             query,
@@ -50,7 +53,11 @@ class RerankCollator:
         }
 
         if "label" in features[0]:
-            batch["labels"] = torch.tensor([f["label"] for f in features], dtype=torch.float)
+            labels = [f["label"] for f in features]
+            # Flatten labels list if it's a list of lists
+            if isinstance(labels[0], list):
+                labels = [l for sublist in labels for l in sublist]
+            batch["labels"] = torch.tensor(labels, dtype=torch.float)
 
         return batch
 
@@ -120,3 +127,9 @@ class EvalDatasetForReranker(Dataset):
             "passage": [self.args.passage_instruction_for_retrieval + p for p in passages],
             "label": labels
         }
+
+def load_dataset(args: DataArguments, tokenizer: PreTrainedTokenizer, evaluate=False):
+    if evaluate:
+        return EvalDatasetForReranker(args, tokenizer)
+    else:
+        return TrainDatasetForReranker(args, tokenizer)
