@@ -13,67 +13,76 @@ class BiTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
     def evaluation_loop(
-        self,
-        dataloader: DataLoader,
-        description: str,
-        prediction_loss_only: Optional[bool] = None,
-        ignore_keys: Optional[List[str]] = None,
-        metric_key_prefix: str = "eval",
-    ) -> EvalLoopOutput:
-        
-        model = self._wrap_model(self.model, training=False, dataloader=dataloader)
-        
-        batch_size = dataloader.batch_size
-        num_examples = self.num_examples(dataloader)
-        logger.info(f"***** Running evaluation *****")
-        logger.info(f"  Num examples = {num_examples}")
-        logger.info(f"  Batch size = {batch_size}")
-        
-        model.eval()
-        
-        self.callback_handler.eval_dataloader = dataloader
-        
-        loss_host = torch.tensor(0.0).to(self.args.device)
-        all_losses = torch.tensor(0.0).to(self.args.device)
-        all_preds = None
-        all_labels = None
-        
-        observed_num_examples = 0
-        
-        for step, inputs in enumerate(dataloader):
-            observed_batch_size = find_batch_size(inputs)
-            observed_num_examples += observed_batch_size
+            self,
+            dataloader: DataLoader,
+            description: str,
+            prediction_loss_only: Optional[bool] = None,
+            ignore_keys: Optional[List[str]] = None,
+            metric_key_prefix: str = "eval",
+        ) -> EvalLoopOutput:
             
-            with torch.no_grad():
-                inputs = self._prepare_inputs(inputs)
-                loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
-                loss_host += loss.detach()
-                all_losses += loss.detach() * observed_batch_size
+            model = self._wrap_model(self.model, training=False, dataloader=dataloader)
             
-            if all_preds is None:
-                all_preds = outputs.logits.detach().cpu().numpy()
-                all_labels = inputs["labels"].detach().cpu().numpy()
-            else:
-                all_preds = np.append(all_preds, outputs.logits.detach().cpu().numpy(), axis=0)
-                all_labels = np.append(all_labels, inputs["labels"].detach().cpu().numpy(), axis=0)
+            batch_size = dataloader.batch_size
+            num_examples = self.num_examples(dataloader)
+            logger.info(f"***** Running evaluation *****")
+            logger.info(f"  Num examples = {num_examples}")
+            logger.info(f"  Batch size = {batch_size}")
             
-            self.control = self.callback_handler.on_prediction_step(self.args, self.state, self.control)
-        
-        loss = loss_host / len(dataloader)
-        all_losses = all_losses / observed_num_examples
-        
-        metrics = self.compute_metrics(EvalPrediction(predictions=all_preds, label_ids=all_labels))
-        metrics[f"{metric_key_prefix}_loss"] = all_losses.item()
-        
-        for key in list(metrics.keys()):
-            if not key.startswith(f"{metric_key_prefix}_"):
-                metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
-        
-        self.log(metrics)
-        
-        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, metrics)
-        
-        return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_examples)
+            model.eval()
+            
+            self.callback_handler.eval_dataloader = dataloader
+            
+            loss_host = torch.tensor(0.0).to(self.args.device)
+            all_losses = torch.tensor(0.0).to(self.args.device)
+            all_preds = None
+            all_labels = None
+            
+            observed_num_examples = 0
+            
+            for step, inputs in enumerate(dataloader):
+                # TrainDatasetForReranker returns a list of dictionaries
+                observed_batch_size = len(inputs)
+                observed_num_examples += observed_batch_size
+                
+                with torch.no_grad():
+                    batch_losses = []
+                    batch_preds = []
+                    batch_labels = []
+                    for instance in inputs:
+                        instance = self._prepare_inputs(instance)
+                        loss, outputs = self.compute_loss(model, instance, return_outputs=True)
+                        batch_losses.append(loss.detach())
+                        batch_preds.append(outputs.logits.detach().cpu().numpy())
+                        batch_labels.append(instance["labels"].detach().cpu().numpy())
+                    
+                    loss_host += sum(batch_losses)
+                    all_losses += sum(batch_losses)
+                
+                if all_preds is None:
+                    all_preds = np.concatenate(batch_preds, axis=0)
+                    all_labels = np.concatenate(batch_labels, axis=0)
+                else:
+                    all_preds = np.concatenate([all_preds] + batch_preds, axis=0)
+                    all_labels = np.concatenate([all_labels] + batch_labels, axis=0)
+                
+                self.control = self.callback_handler.on_prediction_step(self.args, self.state, self.control)
+            
+            loss = loss_host / len(dataloader)
+            all_losses = all_losses / observed_num_examples
+            
+            metrics = self.compute_metrics(EvalPrediction(predictions=all_preds, label_ids=all_labels))
+            metrics[f"{metric_key_prefix}_loss"] = all_losses.item()
+            
+            for key in list(metrics.keys()):
+                if not key.startswith(f"{metric_key_prefix}_"):
+                    metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
+            
+            self.log(metrics)
+            
+            self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, metrics)
+            
+            return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_examples)
 
     def evaluate(
         self,
