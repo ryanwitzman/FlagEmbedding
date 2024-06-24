@@ -58,7 +58,19 @@ class BiTrainer(Trainer):
                 batch_labels = []
                 for instance in batch:
                     instance = self._prepare_inputs(instance)
-                    loss, outputs = self.compute_loss(model, instance, return_outputs=True)
+                    loss_output = self.compute_loss(model, instance, return_outputs=True)
+                    
+                    # Handle the case where compute_loss returns a dictionary
+                    if isinstance(loss_output, dict):
+                        loss = loss_output['loss']
+                        outputs = loss_output
+                    else:
+                        loss, outputs = loss_output
+                    
+                    # Ensure loss is a tensor
+                    if not isinstance(loss, torch.Tensor):
+                        loss = torch.tensor(loss).to(self.args.device)
+                    
                     batch_losses.append(loss.detach())
                     batch_preds.append(outputs.logits.detach().cpu().numpy())
                     batch_labels.append(instance["labels"].detach().cpu().numpy())
