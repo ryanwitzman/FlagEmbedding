@@ -6,6 +6,8 @@ import math
 import os.path
 import random
 from dataclasses import dataclass
+from transformers import DataCollatorWithPadding
+
 
 import datasets
 import numpy as np
