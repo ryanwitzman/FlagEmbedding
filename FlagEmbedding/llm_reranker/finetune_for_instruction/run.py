@@ -4,12 +4,27 @@ from pathlib import Path
 
 from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, set_seed
 from .arguments import ModelArguments, DataArguments, RetrieverTrainingArguments as TrainingArguments
-from .data import TrainDatasetForReranker, EvalDatasetForReranker,RerankCollator
+from .data import TrainDatasetForReranker, EvalDatasetForReranker, RerankCollator
 from .modeling import BiEncoderModel
 from .trainer import BiTrainer
 from .load_model import get_model
 
 logger = logging.getLogger(__name__)
+
+def compute_metrics(eval_pred):
+    """
+    Compute metrics during evaluation.
+    
+    Args:
+        eval_pred: A tuple containing predictions and labels.
+    
+    Returns:
+        A dictionary containing the computed metrics.
+    """
+    predictions, labels = eval_pred
+    # Example metric computation (e.g., accuracy)
+    accuracy = (predictions == labels).mean()
+    return {"accuracy": accuracy}
 
 def main():
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
@@ -92,7 +107,7 @@ def main():
         model.enable_input_require_grads()
 
     train_dataset = TrainDatasetForReranker(args=data_args, tokenizer=tokenizer)
-    data_args.batch_size=1
+    data_args.batch_size = 1
     eval_dataset = EvalDatasetForReranker(args=data_args, tokenizer=tokenizer)
 
     trainer = BiTrainer(
@@ -109,6 +124,7 @@ def main():
             padding=True
         ),
         tokenizer=tokenizer,
+        compute_metrics=compute_metrics,
     )
 
     Path(training_args.output_dir).mkdir(parents=True, exist_ok=True)
