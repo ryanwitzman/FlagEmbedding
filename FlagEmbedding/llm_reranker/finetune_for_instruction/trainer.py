@@ -62,27 +62,45 @@ class BiTrainer(Trainer):
                     
                     # Handle the case where compute_loss returns a dictionary
                     if isinstance(loss_output, dict):
-                        loss = loss_output['loss']
+                        loss = loss_output.get('loss')
                         outputs = loss_output
                     else:
                         loss, outputs = loss_output
                     
-                    # Ensure loss is a tensor
-                    if not isinstance(loss, torch.Tensor):
-                        loss = torch.tensor(loss).to(self.args.device)
+                    # Handle different types of loss
+                    if isinstance(loss, dict):
+                        # If loss is a dictionary, sum all loss values
+                        loss = sum(loss.values())
+                    elif not isinstance(loss, torch.Tensor):
+                        # If loss is not a tensor (e.g., a scalar), convert it to a tensor
+                        loss = torch.tensor(loss, dtype=torch.float)
+                    
+                    loss = loss.to(self.args.device)
                     
                     batch_losses.append(loss.detach())
-                    batch_preds.append(outputs.logits.detach().cpu().numpy())
-                    batch_labels.append(instance["labels"].detach().cpu().numpy())
+                    
+                    # Handle the case where outputs might not have logits
+                    if hasattr(outputs, 'logits'):
+                        batch_preds.append(outputs.logits.detach().cpu().numpy())
+                    else:
+                        logger.warning("Outputs object does not have 'logits' attribute. Skipping predictions.")
+                    
+                    if "labels" in instance:
+                        batch_labels.append(instance["labels"].detach().cpu().numpy())
+                    else:
+                        logger.warning("Input does not have 'labels'. Skipping labels.")
                 
                 loss_host += sum(batch_losses)
                 all_losses += sum(batch_losses)
             
-            if all_preds is None:
+            if batch_preds and all_preds is None:
                 all_preds = np.concatenate(batch_preds, axis=0)
-                all_labels = np.concatenate(batch_labels, axis=0)
-            else:
+            elif batch_preds:
                 all_preds = np.concatenate([all_preds] + batch_preds, axis=0)
+            
+            if batch_labels and all_labels is None:
+                all_labels = np.concatenate(batch_labels, axis=0)
+            elif batch_labels:
                 all_labels = np.concatenate([all_labels] + batch_labels, axis=0)
             
             self.control = self.callback_handler.on_prediction_step(self.args, self.state, self.control)
@@ -90,7 +108,11 @@ class BiTrainer(Trainer):
         loss = loss_host / len(dataloader)
         all_losses = all_losses / observed_num_examples
         
-        metrics = self.compute_metrics(EvalPrediction(predictions=all_preds, label_ids=all_labels))
+        if self.compute_metrics is not None and all_preds is not None and all_labels is not None:
+            metrics = self.compute_metrics(EvalPrediction(predictions=all_preds, label_ids=all_labels))
+        else:
+            metrics = {}
+        
         metrics[f"{metric_key_prefix}_loss"] = all_losses.item()
         
         for key in list(metrics.keys()):
