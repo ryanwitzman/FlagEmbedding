@@ -48,34 +48,50 @@ class BiTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
     def evaluation_loop(
-        self,
-        dataloader: DataLoader,
-        description: str,
-        prediction_loss_only: Optional[bool] = None,
-        ignore_keys: Optional[List[str]] = None,
-        metric_key_prefix: str = "eval",
-    ) -> EvalLoopOutput:
-        model = self._wrap_model(self.model, training=False, dataloader=dataloader)
-        batch_size = dataloader.batch_size if dataloader.batch_size is not None else 1
-        num_examples = self.num_examples(dataloader)
-        logger.info(f"***** Running {description} *****")
-        logger.info(f"  Num examples = {num_examples}")
-        logger.info(f"  Batch size = {batch_size}")
-        model.eval()
-        self.callback_handler.eval_dataloader = dataloader
-        
-        total_loss = 0.0
-        num_batches = 0
-        
-        for step, inputs in enumerate(dataloader):
-            with torch.no_grad():
-                loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
-                total_loss += loss.item()
-                num_batches += 1
-
-        avg_loss = total_loss / num_batches if num_batches > 0 else 0
-        
-        metrics = {f"{metric_key_prefix}_loss": avg_loss}
-        self.log(metrics)
-        
-        return EvalLoopOutput(predictions=None, label_ids=None, metrics=metrics, num_samples=num_examples)
+            self,
+            dataloader: DataLoader,
+            description: str,
+            prediction_loss_only: Optional[bool] = None,
+            ignore_keys: Optional[List[str]] = None,
+            metric_key_prefix: str = "eval",
+        ) -> EvalLoopOutput:
+            model = self._wrap_model(self.model, training=False, dataloader=dataloader)
+            batch_size = dataloader.batch_size if dataloader.batch_size is not None else 1
+            num_examples = self.num_examples(dataloader)
+            logger.info(f"***** Running {description} *****")
+            logger.info(f"  Num examples = {num_examples}")
+            logger.info(f"  Batch size = {batch_size}")
+            model.eval()
+            self.callback_handler.eval_dataloader = dataloader
+            
+            total_loss = 0.0
+            num_batches = 0
+            
+            for step, inputs in enumerate(dataloader):
+                with torch.no_grad():
+                    loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+                    if isinstance(loss, dict):
+                        # If loss is a dictionary, extract the scalar loss value
+                        if 'loss' in loss:
+                            loss_value = loss['loss']
+                        elif 'scores' in loss:
+                            # Assuming 'scores' might be used as a proxy for loss
+                            loss_value = loss['scores'].mean() if torch.is_tensor(loss['scores']) else np.mean(loss['scores'])
+                        else:
+                            logger.warning(f"Unexpected loss dictionary format: {loss.keys()}")
+                            continue
+                    else:
+                        loss_value = loss
+                    
+                    if torch.is_tensor(loss_value):
+                        loss_value = loss_value.item()
+                    
+                    total_loss += loss_value
+                    num_batches += 1
+    
+            avg_loss = total_loss / num_batches if num_batches > 0 else 0
+            
+            metrics = {f"{metric_key_prefix}_loss": avg_loss}
+            self.log(metrics)
+            
+            return EvalLoopOutput(predictions=None, label_ids=None, metrics=metrics, num_samples=num_examples)
