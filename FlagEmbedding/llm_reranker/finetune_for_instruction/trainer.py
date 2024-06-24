@@ -42,6 +42,7 @@ class BiTrainer(Trainer):
             with torch.no_grad():
                 outputs = model(**inputs)
                 loss = outputs.loss
+                logger.info(loss)
                 if loss is not None:
                     total_loss += loss.item()
                 
