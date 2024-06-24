@@ -105,7 +105,7 @@ class DataArguments:
 @dataclass
 class RetrieverTrainingArguments(TrainingArguments):
     loss_type: str = field(default='only logits')
-    do_eval: bool = field(default=False, metadata={"help": "Whether to run eval on the dev set."})
+    do_eval: bool = field(default=True, metadata={"help": "Whether to run eval on the dev set."})
     eval_steps: int = field(default=None, metadata={"help": "Run an evaluation every X steps."})
     evaluate_during_training: bool = field(default=False, metadata={"help": "Run evaluation during training at each logging step."})
     per_device_eval_batch_size: int = field(default=8, metadata={"help": "Batch size per GPU/TPU core/CPU for evaluation."})
