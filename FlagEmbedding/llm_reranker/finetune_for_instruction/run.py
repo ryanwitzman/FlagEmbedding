@@ -87,6 +87,10 @@ def main():
 
     train_dataset = TrainDatasetForReranker(args=data_args, tokenizer=tokenizer)
     eval_dataset = EvalDatasetForReranker(args=data_args, tokenizer=tokenizer)
+    training_args.eval_steps=50
+    training_args.per_device_eval_batch_size=1
+    training_args.evaluation_strategy=True
+    trainer.use_lora = model_args.use_lora
 
     trainer = BiTrainer(
         model=model,
@@ -104,10 +108,6 @@ def main():
         tokenizer=tokenizer,
         
     )
-    training_args.eval_steps=50
-    training_args.per_device_eval_batch_size=1
-    training_args.evaluation_strategy=True
-    trainer.use_lora = model_args.use_lora
 
     Path(training_args.output_dir).mkdir(parents=True, exist_ok=True)
 
