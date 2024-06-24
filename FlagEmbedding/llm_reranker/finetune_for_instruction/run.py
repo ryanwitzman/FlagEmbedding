@@ -12,20 +12,16 @@ from .load_model import get_model
 logger = logging.getLogger(__name__)
 
 def compute_metrics(eval_pred):
-    """
-    Compute metrics during evaluation.
-    
-    Args:
-        eval_pred: A tuple containing predictions and labels.
-    
-    Returns:
-        A dictionary containing the computed metrics.
-    """
     predictions, labels = eval_pred
-    # Example metric computation (e.g., accuracy)
+    print(f"Predictions shape: {predictions.shape}")
+    print(f"Labels shape: {labels.shape}")
+    
+    if labels.shape[0] == 0:
+        print("Labels array is empty!")
+        return {}
+    
     accuracy = (predictions == labels).mean()
     return {"accuracy": accuracy}
-
 def main():
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
